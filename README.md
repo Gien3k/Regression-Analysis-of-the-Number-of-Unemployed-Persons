@@ -40,8 +40,6 @@ Key variables explored include (but are not limited to):
 * Liquidated Jobs
 * Employment Costs
 
-**Note:** The compiled Excel files (e.g., `unemployed.xlsx`, `vodka_price.xlsx`, `avg_salary.xlsx`, etc., using English filenames as expected by the code), originally sourced from GUS, **are included** in the `data/` folder within this repository. Ensure paths within the R code (`Project.Rmd` or `analysis_script.R`) correctly point to this subfolder (e.g., using `file.path("data", "filename.xlsx")`).
-
 ## 4. Methodology
 
 The core of the analysis is **multiple linear regression**. Predictor variables undergo a selection process involving the removal of near-zero variance features and features exhibiting high pairwise correlation (cutoff > 0.70). The final model's validity is assessed through a suite of standard diagnostic tests and graphical analysis to check for violations of OLS assumptions. Forecasting for the subsequent year is performed via linear extrapolation of predictors.
