@@ -1,0 +1,827 @@
+---
+title: "Regression Analysis of the Number of Unemployed Persons"
+author: "Mateusz Grabowski"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+### **1. Introduction**
+
+#### **1.1 Purpose of the Analysis**
+The aim of this project is to analyze the socio-economic factors influencing the number of unemployed persons in Poland and to develop a regression model enabling the forecasting of this variable in the future. Through the application of statistical methods and exploratory data analysis, it is possible to determine which factors have the greatest impact on the unemployment level and to evaluate the predictive effectiveness of the model.
+
+#### **1.2 Scope of the Study**
+The analysis covers data from the years 2010-2022, including, among others:
+
+- Average salaries,
+- Number of divorces,
+- Number of crimes,
+- Alcohol dependence,
+- Number of foster families.
+
+Based on this data, a linear regression model was created, allowing for the forecasting of the number of unemployed persons for the following year (2023). Additionally, a detailed diagnostic of the model was conducted to ensure it meets key statistical assumptions.
+
+#### **1.3 Significance of the Study**
+Unemployment is one of the key economic indicators, significantly impacting the country's economic situation and the quality of life of its citizens. Understanding the factors determining the level of unemployment allows for better planning of employment policies and more effective counteraction of labor market problems.
+
+The results of this analysis may be useful for economists, policymakers, and labor market analysts, enabling them to make better-informed decisions regarding social and economic policy.
+
+---
+
+### **2. Loading Packages**
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Set the root directory if needed for file paths, adjust as necessary
+# knitr::opts_knit$set(root.dir = "path/to/your/directory")
+# It's often better to use relative paths or RStudio projects to manage working directories
+```{r load-packages}
+# Load necessary R packages, suppressing startup messages
+suppressPackageStartupMessages({
+  library(readxl)      # For reading Excel files
+  library(ggplot2)     # For creating plots
+  library(car)         # For regression diagnostics (e.g., VIF, Anova)
+  library(lmtest)      # For diagnostic tests (e.g., Breusch-Pagan, Durbin-Watson)
+  library(dplyr)       # For data manipulation
+  library(purrr)       # For functional programming (used here for joining data)
+  library(caret)       # For data pre-processing (e.g., nearZeroVar, findCorrelation)
+  library(tseries)     # For time series analysis tests (e.g., Jarque-Bera)
+  library(strucchange) # For testing structural changes in models (RESET test)
+  library(forecast)    # For forecasting tools (though not heavily used here)
+  library(writexl)     # For writing Excel files (if needed)
+  library(scales)      # For scaling axes in plots (e.g., comma format)
+  library(ggcorrplot)  # For visualizing correlation matrices
+  library(tidyr)       # For tidying data (e.g., pivot_longer)
+})
+```
+
+### **3. Loading and Processing Data**
+
+In this section, data concerning various social and economic factors that may influence the unemployment level were loaded. All data originate from **Excel** files and contain information broken down by year.
+
+*Note: Ensure the Excel files are in the correct working directory or provide full paths.*
+
+#### **3.1 Loading Data**
+
+The code below is responsible for importing data into the **R** environment using English variable names.
+```{r load-data}
+# Function to read data from Excel files, select Year and Value columns, rename Value column
+# Now includes prepending the 'data/' subdirectory to the filename
+# Wrap in tryCatch for better error handling if files might be missing
+load_excel_data <- function(filename_relative, value_col_name) {
+  # Construct the full path relative to the project root
+  full_path <- file.path("data", filename_relative)
+  tryCatch({
+    read_excel(full_path) %>%
+      # Assuming Excel columns are named 'Rok' and 'Wartosc'
+      select(Year = Rok, Value = Wartosc) %>%
+      rename({{value_col_name}} := Value)
+  }, error = function(e) {
+    warning(paste("Could not load or process file:", full_path, "\nError:", e$message))
+    # Return an empty tibble with expected columns
+    tibble(Year = integer(), {{value_col_name}} := numeric())
+  })
+}
+
+# Load data using NEW ENGLISH file names from the 'data' subfolder
+vodka_price_data <- load_excel_data("vodka_price.xlsx", "vodka_price")
+psychiatric_treatment_data <- load_excel_data("psychiatric_treatment.xlsx", "psychiatric_treatment")
+crimes_data <- load_excel_data("crimes.xlsx", "crimes")
+divorces_data <- load_excel_data("divorces.xlsx", "divorces")
+alcohol_dependence_data <- load_excel_data("alcohol_dependence.xlsx", "alcohol_dependence")
+salary_data <- load_excel_data("avg_salary.xlsx", "avg_salary")
+aids_data <- load_excel_data("aids_cases.xlsx", "aids_cases")
+unemployed_data <- load_excel_data("unemployed.xlsx", "unemployed")
+housing_price_data <- load_excel_data("housing_price.xlsx", "housing_price")
+prisoners_data <- load_excel_data("prisoners.xlsx", "prisoners")
+foster_families_data <- load_excel_data("foster_families.xlsx", "foster_families")
+liquidated_jobs_data <- load_excel_data("liquidated_jobs.xlsx", "liquidated_jobs")
+employment_costs_data <- load_excel_data("employment_costs.xlsx", "employment_costs")
+
+# Check if 'unemployed_data' loaded correctly, stop if not
+if(nrow(unemployed_data) == 0) {
+  stop("Failed to load the primary dependent variable file: data/unemployed.xlsx. Please check the file path and format.")
+}
+```
+
+### **4. Data Conversion**
+
+After loading the data, it was necessary to ensure format consistency, especially concerning the **Year** variable. In the source files, data might have been stored as text, so all year values were converted to a numeric format.
+
+#### **4.1 Definition of the Conversion Function**
+
+The following function **convert_year_to_numeric()** was used to change the values in the **Year** column to numbers.
+
+```{r convert-function}
+# Function to convert the 'Year' column to numeric, handles potential errors
+convert_year_to_numeric <- function(df) {
+  # Check if df is a valid data frame and has the 'Year' column
+  if (!is.data.frame(df) || !"Year" %in% colnames(df)) {
+      warning("Input is not a valid data frame or 'Year' column is missing.")
+      return(df) # Return unchanged df or handle error differently
+  }
+  df %>%
+      mutate(Year = suppressWarnings(as.numeric(as.character(Year)))) # Convert factor/char safely
+}
+```
+
+#### **4.2 Applying the Conversion**
+
+Converting the **Year** values to a numeric type allows for correct data merging, analysis, and statistical modeling. Otherwise, these values could be treated as categories or character strings, leading to errors in the analysis.
+
+The function was applied to all loaded datasets, ensuring a uniform structure for the `Year` variable across all sets.
+```{r apply-conversion}
+# Apply conversion individually, checking if the df exists first.
+if (exists("vodka_price_data") && is.data.frame(vodka_price_data)) vodka_price_data <- convert_year_to_numeric(vodka_price_data)
+if (exists("psychiatric_treatment_data") && is.data.frame(psychiatric_treatment_data)) psychiatric_treatment_data <- convert_year_to_numeric(psychiatric_treatment_data)
+if (exists("crimes_data") && is.data.frame(crimes_data)) crimes_data <- convert_year_to_numeric(crimes_data)
+if (exists("divorces_data") && is.data.frame(divorces_data)) divorces_data <- convert_year_to_numeric(divorces_data)
+if (exists("alcohol_dependence_data") && is.data.frame(alcohol_dependence_data)) alcohol_dependence_data <- convert_year_to_numeric(alcohol_dependence_data)
+if (exists("salary_data") && is.data.frame(salary_data)) salary_data <- convert_year_to_numeric(salary_data)
+if (exists("aids_data") && is.data.frame(aids_data)) aids_data <- convert_year_to_numeric(aids_data)
+if (exists("unemployed_data") && is.data.frame(unemployed_data)) unemployed_data <- convert_year_to_numeric(unemployed_data)
+if (exists("housing_price_data") && is.data.frame(housing_price_data)) housing_price_data <- convert_year_to_numeric(housing_price_data)
+if (exists("prisoners_data") && is.data.frame(prisoners_data)) prisoners_data <- convert_year_to_numeric(prisoners_data)
+if (exists("foster_families_data") && is.data.frame(foster_families_data)) foster_families_data <- convert_year_to_numeric(foster_families_data)
+if (exists("liquidated_jobs_data") && is.data.frame(liquidated_jobs_data)) liquidated_jobs_data <- convert_year_to_numeric(liquidated_jobs_data)
+if (exists("employment_costs_data") && is.data.frame(employment_costs_data)) employment_costs_data <- convert_year_to_numeric(employment_costs_data)
+
+```
+
+### **5. Merging Data**
+
+After preparing the individual datasets, it was necessary to combine them into a single data frame **df_merged** based on the common variable **Year**.
+
+#### **5.1 Merging Datasets**
+
+To merge the data, the **reduce()** function from the **purrr** package and the **full_join()** method were used. This way, all datasets were combined into one table, retaining all available values for each year present in any file.
+
+```{r merge-data}
+# Create a list of data frames that were successfully loaded and converted
+# Filter out any NULLs or non-dataframes resulting from load errors
+valid_df_list <- Filter(function(x) is.data.frame(x) && nrow(x) > 0,
+                        list(unemployed_data, vodka_price_data, psychiatric_treatment_data,
+                             crimes_data, divorces_data, alcohol_dependence_data, salary_data,
+                             aids_data, housing_price_data, prisoners_data, foster_families_data,
+                             liquidated_jobs_data, employment_costs_data))
+
+# Check if the list is not empty and contains 'unemployed_data'
+if (length(valid_df_list) > 0 && any(sapply(valid_df_list, function(df) "unemployed" %in% colnames(df)))) {
+  # Use reduce to sequentially join all valid data frames by 'Year'
+  df_merged <- reduce(valid_df_list, full_join, by = "Year")
+
+  # Display structure of the merged dataframe
+  # print(str(df_merged))
+  # print(head(df_merged))
+
+} else {
+  stop("No valid data frames available for merging, or 'unemployed_data' is missing.")
+}
+```
+
+### **6. Data Cleaning and Preparation**
+
+Before proceeding with regression modeling and data analysis, several cleaning and variable type conversion operations were necessary. This section describes the steps taken.
+
+#### **6.1 Handling Missing or Non-Numeric Values**
+
+Some data might contain non-numeric entries (like "-") or be missing (NA) after the join. These need to be handled. We will replace "-" with NA and then remove rows with *any* NA value to ensure complete cases for the model.
+
+```{r clean-data}
+# Use df_merged from now on
+# Replace any potential "-" strings with NA across the entire dataframe
+df_merged <- as.data.frame(lapply(df_merged, function(col) {
+  if (is.character(col) || is.factor(col)) {
+     na_if(col, "-")
+  } else {
+    col
+  }
+}))
+
+# Convert all columns (except Year, which should be numeric) to numeric, coercing errors to NA
+df_merged <- df_merged %>%
+    mutate(across(-Year, ~suppressWarnings(as.numeric(as.character(.)))))
+
+# Remove rows with any NA values (listwise deletion)
+df_complete <- na.omit(df_merged)
+
+# Check dimensions before and after NA removal
+# print(paste("Dimensions before NA removal:", paste(dim(df_merged), collapse="x")))
+# print(paste("Dimensions after NA removal:", paste(dim(df_complete), collapse="x")))
+
+# Stop if no complete cases remain
+if(nrow(df_complete) == 0) {
+  stop("No complete observations remain after removing NAs. Check input data quality.")
+} else if (nrow(df_complete) < 10) { # Check if enough data points remain
+   warning(paste("Only", nrow(df_complete), "complete observations remain. Model results may be unreliable."))
+}
+```
+
+#### **6.2 Removing the 'Year' Column for Modeling**
+
+The `Year` column serves only an indexing function and is not directly needed as a predictor in this specific regression model setup. It was removed from the dataset used for modeling.
+
+```{r prepare-data-modeling}
+# Create df_model by removing the 'Year' column from the complete cases dataframe
+if ("Year" %in% colnames(df_complete)) {
+  df_model <- df_complete %>% select(-Year)
+} else {
+  df_model <- df_complete # Assume Year was already absent
+}
+
+# Ensure 'unemployed' column exists
+if (!"unemployed" %in% colnames(df_model)) {
+  stop("'unemployed' column not found in the prepared data frame 'df_model'.")
+}
+
+# Ensure all columns are numeric (redundant if done before na.omit, but safe)
+df_model <- df_model %>% mutate(across(everything(), as.numeric))
+
+```
+
+### **7. Displaying Data Before Variable Removal**
+
+Before starting the variable selection process, the first few rows of the prepared dataset (`df_model`) were displayed:
+
+```{r show-data-before, echo=TRUE}
+# Display the head of the dataframe ready for modeling
+print("Head of data frame before variable removal:")
+head(df_model)
+
+# Display summary statistics
+print("Summary of data frame before variable removal:")
+summary(df_model)
+```
+
+#### **7.1 Dataset Characteristics**
+
+Based on the summary and head, the dataset `df_model` contains the dependent variable `unemployed` and potential predictors (like `vodka_price`, `crimes`, `divorces`, `avg_salary`, `foster_families`, etc.), now as numeric columns with complete cases. The exact list depends on which files loaded successfully and which columns survived the join and NA removal.
+
+### **8. Data Optimization (Feature Selection)**
+
+To improve the quality of the regression model and avoid problems related to multicollinearity and low-variance predictors, some variables were removed.
+
+1.  **Removal of near-zero variance variables**.
+2.  **Removal of highly correlated variables** (absolute correlation > 0.70).
+
+```{r remove-correlated-nzv}
+# Ensure there are enough columns to perform selection
+if (ncol(df_model) <= 2) {
+  warning("Not enough predictor columns to perform feature selection.")
+} else {
+
+  # 1. Remove Near-Zero Variance Predictors
+  # Identify predictors (all columns except 'unemployed')
+  predictors_initial <- setdiff(colnames(df_model), "unemployed")
+  # Use caret's nearZeroVar function
+  nzv_indices <- nearZeroVar(df_model[, predictors_initial], saveMetrics = FALSE)
+
+  if (length(nzv_indices) > 0) {
+    nzv_cols_to_remove <- predictors_initial[nzv_indices]
+    print(paste("Removing Near-Zero Variance columns:", paste(nzv_cols_to_remove, collapse=", ")))
+    df_model <- df_model[, !(colnames(df_model) %in% nzv_cols_to_remove)]
+  } else {
+    print("No Near-Zero Variance columns found to remove.")
+  }
+
+  # Update predictor list after NZV removal
+  predictors_after_nzv <- setdiff(colnames(df_model), "unemployed")
+
+  # 2. Remove Highly Correlated Predictors
+  if (length(predictors_after_nzv) > 1) { # Need at least 2 predictors for correlation
+    # Calculate the correlation matrix for remaining predictors
+    cor_matrix <- cor(df_model[, predictors_after_nzv], use = "complete.obs")
+    # Find variables with absolute correlation above 0.70
+    highly_correlated_indices <- findCorrelation(cor_matrix, cutoff = 0.70, names = FALSE) # Get indices
+
+    if (length(highly_correlated_indices) > 0) {
+      highly_correlated_cols_to_remove <- predictors_after_nzv[highly_correlated_indices]
+      print(paste("Removing Highly Correlated columns:", paste(highly_correlated_cols_to_remove, collapse=", ")))
+      df_model <- df_model[, !(colnames(df_model) %in% highly_correlated_cols_to_remove)]
+    } else {
+      print("No highly correlated columns (cutoff=0.70) found to remove.")
+    }
+  } else {
+    print("Not enough predictors remaining to check for high correlation.")
+  }
+}
+
+# Display dimensions after feature selection
+print(paste("Dimensions after variable removal:", paste(dim(df_model), collapse="x")))
+
+# Ensure 'unemployed' is still present
+if (!"unemployed" %in% colnames(df_model)) {
+  stop("'unemployed' column was removed during feature selection. Check the process.")
+}
+# Ensure at least one predictor remains
+if (ncol(df_model) < 2) {
+  stop("No predictor variables remain after feature selection.")
+}
+```
+This process aims to make the model more stable and interpretable.
+
+#### **8.1 Displaying Data After Variable Removal**
+After applying the above operations, the dataset contains only the dependent variable and the selected predictors.
+```{r show-data-after, echo=TRUE}
+print("Head of data frame after variable removal:")
+head(df_model)
+print("Remaining columns:")
+colnames(df_model)
+```
+The final dataset contains variables intended for building the regression model.
+
+### **9. Building the Linear Regression Model**
+
+To investigate the impact of the selected variables on the number of unemployed persons, a linear regression model was constructed using the final dataset `df_model`.
+```{r build-model}
+# Build a linear model: unemployed explained by all other remaining variables in df_model
+# Using `.` automatically includes all other columns as predictors
+final_model <- lm(unemployed ~ ., data = df_model)
+```
+The linear regression model allows us to quantify the relationships between the predictors and the number of unemployed, and to make predictions.
+
+#### **9.1 Linear Regression Model Summary**
+
+An analysis of the model was performed using the `summary()` function.
+```{r model-summary, echo=TRUE}
+summary(final_model)
+```
+**Interpretation:**
+
+The summary provides:
+-   **Coefficients**: Estimates of the intercept and the effect of each predictor on `unemployed`. `Pr(>|t|)` gives the p-value for testing if each coefficient is significantly different from zero.
+-   **R-squared**: The proportion of variance in `unemployed` explained by the model. `Adjusted R-squared` penalizes for the number of predictors.
+-   **F-statistic**: Tests the overall significance of the model.
+
+*Analyze the actual output from your run here. Note the variable names are now in English.*
+
+#### **9.2 Test for Normality of Residuals (Shapiro-Wilk)**
+
+Checking if the residuals follow a normal distribution.
+```{r shapiro-test, echo=TRUE}
+# Perform Shapiro-Wilk test on model residuals
+shapiro_test_result <- shapiro.test(residuals(final_model))
+print(shapiro_test_result)
+
+# Interpretation help
+if (shapiro_test_result$p.value > 0.05) {
+  print("Shapiro-Wilk Test: p > 0.05, Do not reject H0. Residuals appear normally distributed.")
+} else {
+  print("Shapiro-Wilk Test: p <= 0.05, Reject H0. Residuals do not appear normally distributed.")
+}
+```
+*Interpret the actual p-value.*
+
+#### **9.3 Model Specification Test (RESET test)**
+
+Checks for potential specification errors, like omitted non-linear terms.
+```{r reset-test, echo=TRUE}
+# Perform RESET test
+reset_test_result <- resettest(final_model)
+print(reset_test_result)
+
+# Interpretation help
+if (reset_test_result$p.value > 0.05) {
+  print("RESET Test: p > 0.05, Do not reject H0. No evidence of misspecification found.")
+} else {
+  print("RESET Test: p <= 0.05, Reject H0. Evidence of potential misspecification (e.g., missing non-linearity).")
+}
+```
+*Interpret the actual p-value.*
+
+#### **9.4 Multicollinearity Diagnostics (VIF - Variance Inflation Factor)**
+
+VIF measures inflation in the variance of coefficient estimates due to collinearity.
+```{r vif-test, echo=TRUE}
+# Calculate VIF values
+# Ensure there are at least 2 predictors
+if (length(coef(final_model)) > 2) {
+    vif_values <- vif(final_model)
+    print("Variance Inflation Factor (VIF):")
+    print(vif_values)
+
+    # Interpretation help
+    if (any(vif_values > 10)) {
+      print("VIF Interpretation: At least one VIF > 10, indicating potentially problematic multicollinearity.")
+    } else if (any(vif_values > 5)) {
+      print("VIF Interpretation: At least one VIF > 5, indicating moderate multicollinearity. Investigate further.")
+    } else {
+      print("VIF Interpretation: All VIF values are low (< 5), suggesting multicollinearity is not a major issue.")
+    }
+} else {
+    print("VIF calculation requires at least two predictor variables in the model.")
+}
+```
+*Interpret the actual VIF values.*
+
+#### **9.5 Breusch-Pagan Test – Heteroscedasticity**
+
+Tests if the variance of the residuals is constant.
+```{r bp-test, echo=TRUE}
+# Perform Breusch-Pagan test
+bp_test_result <- bptest(final_model)
+print(bp_test_result)
+
+# Interpretation help
+if (bp_test_result$p.value > 0.05) {
+  print("Breusch-Pagan Test: p > 0.05, Do not reject H0. No significant evidence of heteroscedasticity found.")
+} else {
+  print("Breusch-Pagan Test: p <= 0.05, Reject H0. Evidence of heteroscedasticity (non-constant variance).")
+}
+```
+*Interpret the actual p-value.*
+
+#### **9.6 Jarque-Bera Test – Normality of Residuals**
+
+Another test for the normality of residuals.
+```{r jb-test, echo=TRUE}
+# Perform Jarque-Bera test
+jb_test_result <- jarque.bera.test(residuals(final_model))
+print(jb_test_result)
+
+# Interpretation help
+if (jb_test_result$p.value > 0.05) {
+  print("Jarque-Bera Test: p > 0.05, Do not reject H0. Residuals appear normally distributed.")
+} else {
+  print("Jarque-Bera Test: p <= 0.05, Reject H0. Residuals do not appear normally distributed.")
+}
+```
+*Interpret the actual p-value.*
+
+#### **9.7 Analysis of Variance (ANOVA)**
+
+ANOVA table showing the sequential contribution of each predictor.
+```{r anova-test, echo=TRUE}
+# Display ANOVA table for the model using car::Anova for Type II SS is often preferred
+# anova_result <- car::Anova(final_model, type="II")
+# Or use base anova for sequential (Type I) SS
+anova_result <- anova(final_model)
+print(anova_result)
+
+```
+**Interpretation:** Analyze the `Pr(>F)` column for significance of each variable's contribution.
+
+#### **9.8 Durbin-Watson Test – Autocorrelation**
+
+Tests for correlation between residuals from consecutive observations.
+```{r dw-test, echo=TRUE}
+# Perform Durbin-Watson test
+dw_test_result <- dwtest(final_model)
+print(dw_test_result)
+
+# Interpretation help
+if (dw_test_result$p.value > 0.05) {
+  print("Durbin-Watson Test: p > 0.05, Do not reject H0. No significant evidence of autocorrelation found.")
+} else {
+  print("Durbin-Watson Test: p <= 0.05, Reject H0. Evidence of autocorrelation.")
+}
+```
+*Interpret the actual DW statistic and p-value.* Assumes data rows were ordered chronologically before `na.omit`.
+
+### **10. Diagnostic Analysis of the Regression Model**
+
+Visual diagnostics help assess model assumptions.
+```{r diagnostic-plots, echo=TRUE, fig.width=7, fig.height=6}
+# Set up plot layout (2x2 grid)
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+# Generate standard diagnostic plots
+plot(final_model)
+# Reset plot layout to default
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 2) + 0.1)
+```
+
+#### **10.1 Interpretation of Diagnostic Plots**
+
+1.  **Residuals vs Fitted**: Checks linearity and homoscedasticity.
+2.  **Normal Q-Q**: Checks normality of residuals.
+3.  **Scale-Location**: Checks homoscedasticity.
+4.  **Residuals vs Leverage**: Identifies influential points.
+
+*Analyze the generated plots based on these criteria.*
+
+### **11. Actual vs. Predicted Unemployment Values**
+
+Visualizing how well the model's predictions match the actual data.
+```{r actual-vs-predicted-plot, echo=TRUE, fig.width=6, fig.height=5}
+# Create plot of actual vs predicted values
+# Add predictions to the df_model dataframe for plotting
+df_plot <- df_model
+df_plot$predicted_unemployed <- predict(final_model)
+
+ggplot(df_plot, aes(x = unemployed, y = predicted_unemployed)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") + # y=x line
+  labs(title = "Actual vs. Predicted Unemployment Values",
+       x = "Actual Unemployment",
+       y = "Predicted Unemployment") +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal()
+```
+
+#### **Interpretation**
+Points clustering closely around the red dashed line indicate good model fit.
+
+### **12. Preparing Data for Forecasting (Year 2023)**
+
+To forecast for 2023, we need estimated values for the predictors used in the final model (`final_model`) for that year. We use linear time trend extrapolation.
+
+```{r prep-forecast-data}
+# Ensure 'df_merged' (merged data before NA removal) exists
+if (!exists("df_merged")) {
+  stop("Required data frame 'df_merged' not found for forecasting prep.")
+}
+
+# Get the list of predictors used in the final model
+final_predictors <- setdiff(names(coef(final_model)), "(Intercept)")
+
+# Select these predictors and 'Year' from the original merged data 'df_merged'
+df_for_trends <- df_merged %>%
+  select(Year, all_of(final_predictors)) %>%
+  # Ensure Year is numeric
+  mutate(Year = as.numeric(Year)) %>%
+  arrange(Year)
+
+# Check the range of years available
+available_years <- range(df_for_trends$Year, na.rm = TRUE)
+print(paste("Years available for trend fitting:", available_years[1], "-", available_years[2]))
+
+# Target year for forecast
+forecast_year <- 2023
+```
+
+### **13. Forecasting Predictor Values for 2023**
+
+Extrapolate each predictor to 2023 using a linear model based on 'Year'.
+
+```{r forecast-predictors}
+# Create a data frame for the year we want to predict
+new_data_trends <- data.frame(Year = forecast_year)
+
+# Data frame to store forecasted predictor values
+forecasted_predictors_2023 <- data.frame(Year = forecast_year)
+
+# Loop through each final predictor
+for (var in final_predictors) {
+  # Prepare data for this variable's trend model (remove NAs for this specific variable)
+  trend_data_var <- df_for_trends %>%
+                      select(Year, all_of(var)) %>%
+                      filter(!is.na(.data[[var]])) # Use .data pronoun
+
+  # Check if enough data points exist
+  if (nrow(trend_data_var) >= 5) {
+      # Build linear model: predictor ~ Year
+      # Use backticks for variable names that might be non-standard
+      model_var_trend <- lm(as.formula(paste0("`", var, "` ~ Year")), data = trend_data_var)
+      # Predict the value for forecast_year
+      predicted_value <- predict(model_var_trend, newdata = new_data_trends)
+      forecasted_predictors_2023[[var]] <- predicted_value
+  } else {
+      warning(paste("Not enough data points (<5) to fit trend for variable:", var, ". Cannot forecast."))
+      forecasted_predictors_2023[[var]] <- NA
+  }
+}
+
+# Remove the 'Year' column
+forecasted_predictors_2023 <- forecasted_predictors_2023 %>% select(-Year)
+
+# Check if any predictors failed to forecast
+if (any(is.na(forecasted_predictors_2023))) {
+  warning("Forecasting failed for some predictors. Prediction for 'unemployed' might be NA.")
+}
+
+print("Forecasted predictor values for 2023:")
+print(forecasted_predictors_2023)
+```
+
+### **14. Comparing Forecast with Actual Value for 2023**
+
+Use the forecasted predictor values to predict unemployment for 2023 using the main model (`final_model`) and compare it to the known actual value.
+
+```{r compare-forecast}
+# Predict 'unemployed' for 2023 using the main regression model
+# Check existence and validity of forecasted_predictors_2023
+if (exists("forecasted_predictors_2023") && is.data.frame(forecasted_predictors_2023) && all(!is.na(forecasted_predictors_2023))) {
+    forecast_unemployed_value <- predict(final_model, newdata = forecasted_predictors_2023)
+    print(paste("Forecasted number of unemployed for 2023:", round(forecast_unemployed_value)))
+} else {
+    forecast_unemployed_value <- NA
+    print("Cannot forecast 'unemployed' due to missing or invalid forecasted predictor values.")
+}
+
+
+# Retrieve the actual value for 2023 from the original 'unemployed_data' dataframe
+actual_unemployed_df_2023 <- NULL # Initialize
+if (exists("unemployed_data") && is.data.frame(unemployed_data)) {
+    actual_unemployed_df_2023 <- unemployed_data %>% filter(Year == forecast_year)
+}
+
+# Initialize actual value as NA
+actual_unemployed_value <- NA
+
+# Check if exactly one row was found
+if (!is.null(actual_unemployed_df_2023) && nrow(actual_unemployed_df_2023) == 1) {
+  # Attempt to retrieve and convert the value robustly
+  retrieved_value <- actual_unemployed_df_2023$unemployed
+  converted_value <- suppressWarnings(as.numeric(as.character(retrieved_value)))
+
+  if (!is.na(converted_value)) {
+      actual_unemployed_value <- converted_value
+      print(paste("Actual number of unemployed in 2023:", round(actual_unemployed_value)))
+  } else {
+      print(paste("Actual value for 2023 found but is non-numeric:", retrieved_value))
+  }
+
+} else if (!is.null(actual_unemployed_df_2023) && nrow(actual_unemployed_df_2023) > 1) {
+    print(paste("Warning: Multiple entries found for Year =", forecast_year, "in 'unemployed_data'. Cannot determine unique actual value."))
+} else {
+    print(paste("Actual value for Year =", forecast_year, "not found in the 'unemployed_data'."))
+}
+
+# Calculate forecast error only if both values are available and numeric
+if (!is.na(forecast_unemployed_value) && !is.na(actual_unemployed_value)) {
+  forecast_error <- actual_unemployed_value - forecast_unemployed_value
+  if (actual_unemployed_value != 0) {
+      percent_error <- (forecast_error / actual_unemployed_value) * 100
+      print(paste("Forecast Percent Error:", round(percent_error, 2), "%"))
+  } else {
+      percent_error <- NA
+      print("Cannot calculate percent error because actual value is zero.")
+  }
+  print(paste("Forecast Error (Actual - Forecast):", round(forecast_error)))
+} else {
+    print("Cannot calculate forecast error because forecast or actual value is missing or non-numeric.")
+}
+```
+
+#### **Interpretation**
+Compare the forecasted value with the actual value. Calculate the error and percentage error to assess accuracy.
+
+### **15. Visualization of the Unemployment Forecast for 2023**
+
+Plot the historical unemployment trend along with the 2023 forecast and actual value.
+
+```{r plot-forecast, echo=TRUE, fig.width=7, fig.height=5}
+# Prepare historical data (use df_complete which has complete cases used for modeling)
+df_hist_plot <- df_complete %>% arrange(Year)
+
+# Create data frame for the forecast point
+if (!is.na(forecast_unemployed_value)) {
+    forecast_point_df <- data.frame(Year = forecast_year, unemployed = forecast_unemployed_value, Type = "Forecast")
+} else {
+    forecast_point_df <- NULL
+}
+
+# Create data frame for the actual point
+if (!is.na(actual_unemployed_value)) {
+    actual_point_df <- data.frame(Year = forecast_year, unemployed = actual_unemployed_value, Type = "Actual")
+} else {
+    actual_point_df <- NULL
+}
+
+# Combine points for plotting
+points_df <- bind_rows(forecast_point_df, actual_point_df)
+
+# Plot
+ggplot(df_hist_plot, aes(x = Year, y = unemployed)) +
+  geom_line(color = "blue", alpha=0.8) +
+  geom_point(color = "blue", alpha=0.6) +
+  geom_point(data = points_df, aes(x = Year, y = unemployed, color = Type, shape = Type), size = 4) +
+  scale_color_manual(values = c("Forecast" = "red", "Actual" = "darkgreen")) +
+  scale_shape_manual(values = c("Forecast" = 16, "Actual" = 4)) + # Circle for forecast, X for actual
+  labs(title = paste("Unemployment Trend and Forecast for", forecast_year),
+       x = "Year", y = "Number of Unemployed") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_continuous(breaks = seq(min(df_hist_plot$Year), forecast_year, by = 1)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+### **16. Correlation Matrix Between Final Variables**
+
+Visualize the correlations among the variables included in the final model (`df_model`).
+
+```{r correlation-matrix-final, echo=TRUE, fig.width=7, fig.height=6}
+# Calculate the correlation matrix for the final dataset used in the model
+cor_matrix_final <- cor(df_model, use = "complete.obs")
+
+# Visualize the correlation matrix
+ggcorrplot(cor_matrix_final,
+           method = "circle",
+           type = "upper",
+           ggtheme = ggplot2::theme_minimal,
+           lab = TRUE,
+           lab_size = 3.5,
+           title = "Correlation Matrix of Variables in Final Model") +
+  theme(legend.position = "bottom")
+
+```
+
+\
+**Interpretation:** 
+Analyze the correlations between `unemployed` and the final predictors, as well as correlations among the predictors. Low correlations among predictors are desirable.
+
+### **17. Time Trends of Final Variables**
+
+Plot the time trends of the variables included in the final model (`df_model`).
+
+```{r time-trends-final, echo=TRUE, fig.width=9, fig.height=7}
+# Add 'Year' back to df_model for plotting trends
+df_model_trends <- df_model
+# Check if rownames exist and match before using them
+if (all(rownames(df_model) %in% rownames(df_complete))) {
+    df_model_trends$Year <- df_complete[rownames(df_model), "Year"]
+} else {
+    warning("Row names do not match between df_model and df_complete. Cannot reliably add 'Year' for trend plot.")
+    df_model_trends$Year <- NA # Add Year as NA if cannot match
+}
+
+# Reshape data from wide to long format only if Year was added successfully
+if (!any(is.na(df_model_trends$Year))) {
+    df_long_final <- df_model_trends %>%
+                        pivot_longer(cols = -Year, names_to = "Variable", values_to = "Value")
+
+    # Plot time trends using facets
+    ggplot(df_long_final, aes(x = Year, y = Value, color = Variable)) +
+      geom_line() +
+      geom_point(alpha=0.6) +
+      labs(title = "Time Trends of Variables in Final Model", x = "Year", y = "Value") +
+      scale_x_continuous(breaks = seq(min(df_model_trends$Year), max(df_model_trends$Year), by = 1)) +
+      scale_y_continuous(labels = scales::comma) +
+      theme_minimal() +
+      facet_wrap(~ Variable, scales = "free_y") +
+      theme(legend.position = "none",
+            axis.text.x = element_text(angle = 45, hjust = 1))
+} else {
+    print("Skipping time trend plot as 'Year' could not be added back to df_model reliably.")
+}
+```
+
+**Interpretation:** 
+Examine the trend over time for `unemployed` and each predictor included in the final model.
+
+### **18. Histogram of the Number of Unemployed**
+
+Re-display the histogram for the dependent variable using the final data (`df_model`).
+```{r histogram-final, echo=TRUE, fig.width=6, fig.height=4}
+# Create a histogram for the 'unemployed' variable from the final modeling dataset df_model
+ggplot(df_model, aes(x = unemployed)) +
+  geom_histogram(aes(y = after_stat(density)), fill = "steelblue", bins = 10, alpha = 0.8, color="black") +
+  geom_density(color = "red") +
+  labs(title = "Distribution of Unemployed Persons (Final Data)",
+       x = "Number of Unemployed Persons",
+       y = "Density") +
+  scale_x_continuous(labels = scales::comma) +
+  theme_minimal()
+```
+\
+**Interpretation:** 
+Assess the distribution shape of the dependent variable.
+
+### **19. Box Plot for Final Variables**
+
+Show the distribution of each variable in the final model using box plots.
+```{r boxplot-final, echo=TRUE, fig.width=7, fig.height=5}
+# Reuse the long format data from the time trend plot section for final variables
+if (exists("df_long_final") && is.data.frame(df_long_final)) {
+    # Create box plots, excluding Year if it exists
+    ggplot(df_long_final %>% filter(Variable != "Year"), aes(x = Variable, y = Value, fill = Variable)) +
+      geom_boxplot(alpha=0.8) +
+      coord_flip() +
+      labs(title = "Box Plot for Variables in Final Model", x = "Variable", y = "Value") +
+      scale_y_continuous(labels = scales::comma) +
+      theme_minimal() +
+      theme(legend.position = "none")
+} else {
+    print("Skipping box plot as data ('df_long_final') is not available.")
+}
+```
+
+\
+**Interpretation:** 
+Compare the central tendency, spread, and outliers for each variable in the final model.
+
+### **20. Summary of the Regression Analysis**
+
+#### **20.1 Purpose and Approach**
+The project analyzed socio-economic factors potentially influencing unemployment in Poland (2010-2022 data). A linear regression model was built to explain and predict the number of unemployed persons after data cleaning, merging, and feature selection.
+
+#### **20.2 Key Stages & Findings**
+1.  **Data Preparation**: Data loaded, cleaned, converted to numeric, merged by `Year`. Feature selection removed low variance and highly correlated predictors.
+2.  **Model Building**: A linear regression model (`final_model`) fitted `unemployed` using the selected predictors.
+3.  **Model Diagnostics**: Tests (Shapiro-Wilk, RESET, VIF, Breusch-Pagan, Durbin-Watson) and plots assessed model assumptions. *Summarize actual findings.*
+4.  **Model Performance**: Model fit assessed via R-squared and F-statistic. *Report Adjusted R² and F-p-value.* Predictor significance checked. *Mention significant English variable names.*
+5.  **Forecasting**: Predictors extrapolated to 2023; `unemployed` forecast generated. Compared forecast ([value]) to actual ([value]), error was [error]. Accuracy: [good/moderate/poor].
+
+#### **20.3 Conclusions and Recommendations**
+-   The model [describe success].
+-   Significant predictors: [list English names]. Relationships: [describe directions].
+-   Forecast accuracy: [comment]. Extrapolation is a limitation.
+-   *Recommendations:* Explore non-linearities, use robust errors if needed, incorporate domain knowledge. Investigate causal pathways.
+
+#### **20.4 Final Summary**
+Analysis built and evaluated a linear regression model for unemployment. Model fit: [summary]. Key associations: [summary]. Forecast: [summary]. Provides a baseline for refinement.
+
