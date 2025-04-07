@@ -103,7 +103,6 @@ The primary output is the generated report (`Project.html` or PDF) from knitting
 * The forecasted unemployment value for 2023 and its comparison with the actual value (including error calculation).
 * Visualizations of variable correlations and time trends.
 
-The pre-rendered `Project.html` file is currently included in the repository for easy viewing. **However, please be aware that committing large rendered files like this significantly skews GitHub's language detection statistics (making it show HTML instead of R).** For best practice and accurate language reporting, it's recommended to add `*.html` and `*.pdf` to a `.gitignore` file (and potentially remove `Project.html` from Git tracking using `git rm --cached Project.html`) and generate the report locally using the "Knit" button in RStudio on the `Project.Rmd` file.
 
 ## 9. License
 
